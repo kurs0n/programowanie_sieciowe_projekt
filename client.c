@@ -7,15 +7,15 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <errno.h>
-#include <signal.h> // Dla obsługi Ctrl+C
+#include <signal.h> // For Ctrl+C handling
 
 #define BUFFER_SIZE 2048
 #define ROOM_LEN 32
 #define NICK_LEN 32 // Assuming max nick length might be useful
 
 // --- Global variables ---
-volatile sig_atomic_t keep_running = 1;                 // Flaga do kontrolowania pętli
-int sockfd = 0;                                         // Globalny deskryptor gniazda
+volatile sig_atomic_t keep_running = 1;                 // Flag to control the loop
+int sockfd = 0;                                         // Global socket descriptor
 char current_room[ROOM_LEN] = "Lobby";                  // Store current room name, init with default
 pthread_mutex_t room_mutex = PTHREAD_MUTEX_INITIALIZER; // Mutex to protect current_room
 
@@ -26,10 +26,10 @@ const char *DEFAULT_ROOM = "Lobby";
 #define ANSI_CLEAR_LINE "\033[K" // Clears from cursor to end of line
 #define ANSI_CURSOR_START "\r"   // Moves cursor to beginning of the line
 
-// Funkcja obsługująca sygnał (np. Ctrl+C)
+// Signal handler function (e.g., Ctrl+C)
 void intHandler(int dummy)
 {
-    (void)dummy; // Uniknięcie ostrzeżenia o nieużywanym parametrze
+    (void)dummy; // Avoid warning about unused parameter
     keep_running = 0;
     printf("\nCtrl+C detected. Exiting...\n");
     // Close socket to unblock recv in receiver thread
@@ -60,15 +60,16 @@ void get_room(char *buffer, size_t buffer_size)
 }
 
 // Function to print the prompt
+// It displays the current room name followed by ": " and flushes stdout.
 void print_prompt()
 {
     char room_name[ROOM_LEN];
-    get_room(room_name, ROOM_LEN);
-    printf("[%s]: ", room_name);
-    fflush(stdout);
+    get_room(room_name, ROOM_LEN); // Safely get the current room name
+    printf("[%s]: ", room_name);   // Print the prompt with the room name
+    fflush(stdout);                // Ensure the prompt is displayed immediately
 }
 
-// --- Wątek do odbierania wiadomości ---
+// --- Message receiving thread ---
 void *receive_handler(void *arg)
 {
     char buffer[BUFFER_SIZE];
@@ -78,6 +79,19 @@ void *receive_handler(void *arg)
     while (keep_running)
     {
         memset(buffer, 0, BUFFER_SIZE);
+        /**
+         * @brief Receives data from the specified socket.
+         *
+         * This line of code attempts to receive up to BUFFER_SIZE - 1 bytes of data
+         * from the socket identified by socket_desc. The received data is stored
+         * in the buffer. The 0 as the last argument indicates no special flags
+         * are being used for the receive operation.
+         *
+         * The variable receive will store the number of bytes actually received.
+         * If the recv call is successful, receive will be non-negative.
+         * If receive is 0, it means the peer has performed an orderly shutdown.
+         * If receive is -1, an error occurred during the receive operation.
+         */
         int receive = recv(socket_desc, buffer, BUFFER_SIZE - 1, 0);
 
         if (receive > 0)
@@ -106,7 +120,7 @@ void *receive_handler(void *arg)
             // 1. Move cursor to the beginning of the line
             // 2. Clear the line (in case user was typing)
             // 3. Print the received message
-            // 4. Print the prompt for the *next* input
+            // 4. Print the prompt for the next input
             printf("%s%s", ANSI_CURSOR_START, ANSI_CLEAR_LINE); // Move cursor, clear line
             printf("%s", buffer);                               // Print the received message (ensure server sends \n)
             print_prompt();                                     // Print the input prompt for the next line
@@ -142,7 +156,7 @@ void *receive_handler(void *arg)
     return NULL;
 }
 
-// --- Główna funkcja klienta ---
+// --- Main client function ---
 int main(int argc, char *argv[])
 {
     if (argc != 3)
@@ -160,10 +174,10 @@ int main(int argc, char *argv[])
     // Set initial room
     update_room(DEFAULT_ROOM);
 
-    // Rejestracja obsługi sygnału SIGINT (Ctrl+C)
+    // Register SIGINT (Ctrl+C) handler
     signal(SIGINT, intHandler);
 
-    // Tworzenie gniazda
+    // Create socket
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0)
     {
@@ -171,12 +185,12 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    // Konfiguracja adresu serwera
+    // Configure server address
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(port);
 
-    // Konwersja adresu IP
+    // Convert IP address
     if (inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) <= 0)
     {
         perror("ERROR invalid server IP address");
@@ -184,7 +198,7 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    // Nawiązywanie połączenia z serwerem
+    // Connect to server
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
     {
         perror("ERROR connecting to server");
@@ -194,19 +208,19 @@ int main(int argc, char *argv[])
 
     printf("Connected to server %s:%d\n", server_ip, port);
 
-    // Utworzenie wątku do odbierania wiadomości
+    // Create thread for receiving messages from server
     if (pthread_create(&recv_tid, NULL, receive_handler, (void *)&sockfd) != 0)
     {
         perror("ERROR creating receiver thread");
         close(sockfd);
         exit(EXIT_FAILURE);
     }
-
-    // Główna pętla do wysyłania wiadomości (czytanie z stdin)
+    // Main loop for sending messages (reading from stdin)
     while (keep_running)
     {
         print_prompt(); // Print the prompt before waiting for input
 
+        // Read user input from stdin
         if (fgets(message, BUFFER_SIZE, stdin) != NULL)
         {
             // If keep_running changed while waiting for fgets (e.g., Ctrl+C)
@@ -246,11 +260,6 @@ int main(int argc, char *argv[])
                     keep_running = 0; // Signal threads to stop
                 }
             }
-            else
-            {
-                // Empty input, just reprint prompt cleanly if needed (shouldn't be necessary)
-                // print_prompt();
-            }
         }
         else
         {
@@ -271,11 +280,14 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Sprzątanie
+    // Cleanup
     if (sockfd > 0)
     { // Check if socket wasn't already closed by handler
         printf("\nDisconnecting...\n");
+        // Gracefully shut down the socket connection for both reading and writing.
+        // This sends a FIN packet to the server, indicating no more data will be sent or received.
         shutdown(sockfd, SHUT_RDWR);
+        // Close the socket file descriptor, releasing associated system resources.
         close(sockfd);
     }
 

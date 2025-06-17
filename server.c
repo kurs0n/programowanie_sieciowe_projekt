@@ -16,7 +16,6 @@
 #define TOPIC_LEN 256 // Max length for a room topic
 #define MAX_ROOMS 50  // Max number of rooms with custom topics we can store
 
-// --- Global MOTD ---
 const char *MOTD = "=== Welcome to the Simple C Chat Server! ===\n"
                    "Rules: Be respectful.\n"
                    "==========================================\n";
@@ -32,10 +31,9 @@ room_info_t room_topics[MAX_ROOMS];
 pthread_mutex_t room_topics_mutex = PTHREAD_MUTEX_INITIALIZER;
 const char *DEFAULT_TOPIC = "No topic set.";
 
-// Struktura klienta (bez zmian)
 typedef struct
 {
-    int sockfd;
+    int sockfd; // This stores the unique ID for the client's connection
     struct sockaddr_in address;
     char nickname[NICK_LEN];
     char room[ROOM_LEN];
@@ -48,7 +46,6 @@ pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 const char *DEFAULT_ROOM = "Lobby";
 
-// --- Funkcje pomocnicze dla klientów (add_client, remove_client, etc.) - bez zmian ---
 void add_client(client_t *cl)
 {
     pthread_mutex_lock(&clients_mutex);
@@ -108,8 +105,6 @@ void broadcast_system_room(const char *message, const char *room_name)
     pthread_mutex_unlock(&clients_mutex);
 }
 
-// --- Funkcja pomocnicza dla tematów pokoi ---
-// MUST be called with room_topics_mutex HELD
 int find_or_create_room_info_index(const char *room_name)
 {
     int free_slot = -1;
@@ -139,28 +134,26 @@ int find_or_create_room_info_index(const char *room_name)
     return -1;
 }
 
-// --- Główna funkcja obsługi klienta (wątek) ---
 void *handle_client(void *arg)
 {
     char buffer[BUFFER_SIZE];
-    char message_buffer[BUFFER_SIZE + NICK_LEN + ROOM_LEN + TOPIC_LEN + 50]; // Increased size
+    char message_buffer[BUFFER_SIZE + NICK_LEN + ROOM_LEN + TOPIC_LEN + 50];
     int leave_flag = 0;
     client_t *cli = (client_t *)arg;
 
-    // *** NEW: Send MOTD first ***
+    //  Send MOTD first
     send_to_client(cli->sockfd, MOTD);
 
     printf("INFO: Client connected: %s:%d (assigned nick: %s, room: %s)\n",
     inet_ntoa(cli->address.sin_addr), ntohs(cli->address.sin_port), cli->nickname, cli->room);
 
-    // Poinformuj nowego klienta o jego nicku i pokoju
     sprintf(message_buffer, "SYSTEM: Welcome! Your nick is %s. You are in room '%s'.\n", cli->nickname, cli->room);
     send_to_client(cli->sockfd, message_buffer);
-    // *** NEW: Updated help message ***
+    // * NEW: Updated help message *
     sprintf(message_buffer, "SYSTEM: Use /nick <nick>, /join <room>, /topic [new_topic], /users, /list, /quit.\n");
     send_to_client(cli->sockfd, message_buffer);
 
-    // *** NEW: Send initial room topic ***
+    // * NEW: Send initial room topic *
     pthread_mutex_lock(&room_topics_mutex);
     int topic_idx = find_or_create_room_info_index(cli->room);
     if (topic_idx != -1)
@@ -174,7 +167,6 @@ void *handle_client(void *arg)
     pthread_mutex_unlock(&room_topics_mutex);
     send_to_client(cli->sockfd, message_buffer);
 
-    // Poinformuj innych w pokoju o nowym użytkowniku
     sprintf(message_buffer, "SYSTEM: User '%s' has joined room '%s'.\n", cli->nickname, cli->room);
     broadcast_system_room(message_buffer, cli->room);
 
@@ -182,7 +174,9 @@ void *handle_client(void *arg)
     while (leave_flag == 0)
     {
         memset(buffer, 0, BUFFER_SIZE);
+        // Receive message from client
         int receive = recv(cli->sockfd, buffer, BUFFER_SIZE - 1, 0);
+
 
         if (receive > 0)
         {
@@ -306,7 +300,7 @@ void *handle_client(void *arg)
                         strcpy(room_list_buffer + BUFFER_SIZE - 3, "\n");
                     send_to_client(cli->sockfd, room_list_buffer);
                 }
-                // *** NEW: /topic command ***
+                // * NEW: /topic command *
                 else if (strcmp(command, "/topic") == 0)
                 {
                     pthread_mutex_lock(&room_topics_mutex);
@@ -359,7 +353,7 @@ void *handle_client(void *arg)
                         }
                     }
                 }
-                // *** END NEW: /topic command ***
+                // * END NEW: /topic command *
                 else if (strcmp(command, "/nick") == 0)
                 {
                     // [/nick] code as before...
@@ -409,7 +403,7 @@ void *handle_client(void *arg)
                             sprintf(message_buffer, "SYSTEM: You joined room '%s'.\n", cli->room);
                             send_to_client(cli->sockfd, message_buffer);
 
-                            // *** NEW: Send topic of the new room ***
+                            // * NEW: Send topic of the new room *
                             pthread_mutex_lock(&room_topics_mutex);
                             int topic_idx = find_or_create_room_info_index(cli->room);
                             if (topic_idx != -1)
@@ -422,7 +416,7 @@ void *handle_client(void *arg)
                             }
                             pthread_mutex_unlock(&room_topics_mutex);
                             send_to_client(cli->sockfd, message_buffer);
-                            // *** END NEW ***
+                            // * END NEW *
 
                             sprintf(message_buffer, "SYSTEM: User '%s' has joined room '%s'.\n", cli->nickname, cli->room);
                             broadcast_system_room(message_buffer, cli->room);
@@ -442,22 +436,20 @@ void *handle_client(void *arg)
                 }
             }
             else
-            {
-                // Zwykła wiadomość czatu
+            { // sending message to room
                 snprintf(message_buffer, sizeof(message_buffer), "[%s] %s: %s\n", cli->room, cli->nickname, buffer);
                 broadcast_room(message_buffer, cli->sockfd, cli->room);
             }
         }
         else if (receive == 0 || (receive < 0 && errno != EAGAIN && errno != EWOULDBLOCK))
         {
-            // Rozłączenie lub błąd
             sprintf(message_buffer, "SYSTEM: User '%s' has left the chat from room '%s'.\n", cli->nickname, cli->room);
             broadcast_system_room(message_buffer, cli->room);
             printf("INFO: Client disconnected: %s (%s:%d)\n", cli->nickname, inet_ntoa(cli->address.sin_addr), ntohs(cli->address.sin_port));
             leave_flag = 1;
         }
         else
-        { // Błąd niekrytyczny
+        {
             if (errno != EAGAIN && errno != EWOULDBLOCK)
             {
                 perror("ERROR: recv failed");
@@ -466,7 +458,6 @@ void *handle_client(void *arg)
         }
     }
 
-    // Sprzątanie po kliencie
     close(cli->sockfd);
     remove_client(cli->sockfd);
     free(cli);
@@ -474,7 +465,6 @@ void *handle_client(void *arg)
     return NULL;
 }
 
-// --- Główna funkcja serwera (main) ---
 int main(int argc, char *argv[])
 {
     if (argc != 2)
@@ -487,7 +477,7 @@ int main(int argc, char *argv[])
     struct sockaddr_in serv_addr, cli_addr;
     socklen_t clilen = sizeof(cli_addr);
 
-    // *** NEW: Initialize room_topics array ***
+    // * NEW: Initialize room_topics array *
     pthread_mutex_lock(&room_topics_mutex);
     for (int i = 0; i < MAX_ROOMS; ++i)
     {
@@ -496,25 +486,32 @@ int main(int argc, char *argv[])
     }
     // Optionally pre-define Lobby topic
     int lobby_idx = find_or_create_room_info_index(DEFAULT_ROOM);
-    if (lobby_idx != -1)
-    { // Should succeed if MAX_ROOMS > 0
-        // You could set a specific default topic for Lobby here if needed
-        // strncpy(room_topics[lobby_idx].topic, "Welcome to the main lobby!", TOPIC_LEN - 1);
-    }
+
     pthread_mutex_unlock(&room_topics_mutex);
 
-    // Inicjalizacja tablicy klientów
     for (int i = 0; i < MAX_CLIENTS; ++i)
         clients[i] = NULL;
 
-    // Tworzenie gniazda, setsockopt, bind, listen (jak poprzednio)
-    listen_sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    listen_sockfd = socket(AF_INET, SOCK_STREAM, 0); // AF_INET for IPv4, SOCK_STREAM for TCP, 0 for default protocol should return >0 in order to create a socket
     if (listen_sockfd < 0)
     {
         perror("ERROR opening socket");
         exit(EXIT_FAILURE);
     }
     int opt = 1;
+    /**
+     * @brief Sets the SO_REUSEADDR socket option.
+     *
+     * This option allows the socket to be bound to an address that is already in use,
+     * particularly when the previous socket is in the TIME_WAIT state. This is useful
+     * for quickly restarting a server without waiting for the TIME_WAIT period to expire.
+     * If setting the option fails, an error is typically handled (though the error handling
+     * part is not included in this specific snippet).
+     *
+     * @param listen_sockfd The file descriptor of the listening socket.
+     * @param opt A variable (typically an integer set to 1) to enable the SO_REUSEADDR option.
+     * @return Returns a negative value if setsockopt fails, 0 on success.
+     */
     if (setsockopt(listen_sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0)
     {
         perror("ERROR on setsockopt");
@@ -538,7 +535,6 @@ int main(int argc, char *argv[])
 
     printf("INFO: Server listening on port %d\n", port);
 
-    // Główna pętla akceptowania połączeń (jak poprzednio)
     while (1)
     {
         conn_sockfd = accept(listen_sockfd, (struct sockaddr *)&cli_addr, &clilen);
@@ -571,7 +567,7 @@ int main(int argc, char *argv[])
         sprintf(cli->nickname, "User%d", conn_sockfd);
         strcpy(cli->room, DEFAULT_ROOM);
 
-        add_client(cli); // Handles its own mutex
+        add_client(cli); 
         if (pthread_create(&cli->tid, NULL, &handle_client, (void *)cli) != 0)
         {
             perror("ERROR creating thread");
@@ -581,10 +577,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Sprzątanie (teoretycznie nieosiągalne)
     close(listen_sockfd);
     pthread_mutex_destroy(&clients_mutex);
-    pthread_mutex_destroy(&room_topics_mutex); // *** NEW ***
+    pthread_mutex_destroy(&room_topics_mutex);
 
     return 0;
 }
